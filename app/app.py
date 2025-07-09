@@ -6,11 +6,42 @@ import base64
 
 # Page configuration
 st.set_page_config(
-    page_title="Excel Macro Dashboard",
-    page_icon="🔧",
+    page_title="Excel Dashboard",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+def clean_dataframe(df):
+    """Clean dataframe to handle mixed data types and display issues"""
+    try:
+        # Make a copy to avoid modifying original
+        df_clean = df.copy()
+        
+        # Handle mixed data types in columns
+        for col in df_clean.columns:
+            # Convert problematic columns to string to avoid Arrow errors
+            if df_clean[col].dtype == 'object':
+                # Check for mixed types that cause Arrow issues
+                sample_values = df_clean[col].dropna().head(10)
+                if len(sample_values) > 0:
+                    types = sample_values.apply(type).unique()
+                    if len(types) > 1:
+                        # Mixed types - convert to string
+                        df_clean[col] = df_clean[col].astype(str)
+        
+        # Replace NaN values with empty strings
+        df_clean = df_clean.fillna('')
+        
+        # Clean column names
+        df_clean.columns = [f'Column_{i}' if str(col).startswith('Unnamed:') else str(col) 
+                           for i, col in enumerate(df_clean.columns)]
+        
+        return df_clean
+        
+    except Exception as e:
+        st.warning(f"Error cleaning dataframe: {str(e)}")
+        return df
 
 def load_excel_file(uploaded_file):
     """Load Excel file and return workbook and sheet names"""
@@ -19,47 +50,25 @@ def load_excel_file(uploaded_file):
         workbook = openpyxl.load_workbook(uploaded_file, data_only=False, keep_vba=True)
         sheet_names = workbook.sheetnames
         
-        # Also load with pandas for data manipulation
-        excel_data = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
+        # Load with pandas and clean data types
+        excel_data = {}
+        for sheet_name in sheet_names:
+            try:
+                # Read the sheet
+                df = pd.read_excel(uploaded_file, sheet_name=sheet_name, engine='openpyxl')
+                
+                # Clean the dataframe for better display
+                df = clean_dataframe(df)
+                excel_data[sheet_name] = df
+                
+            except Exception as e:
+                st.warning(f"Could not read sheet '{sheet_name}': {str(e)}")
+                excel_data[sheet_name] = pd.DataFrame()
         
         return workbook, sheet_names, excel_data
     except Exception as e:
         st.error(f"Error loading Excel file: {str(e)}")
         return None, None, None
-
-def display_macro_info(workbook):
-    """Display detailed macro/VBA information if present"""
-    try:
-        if hasattr(workbook, 'vba_archive') and workbook.vba_archive:
-            st.success("🔧 **Macro-enabled Excel file detected!**")
-            
-            with st.expander("📋 Macro Details", expanded=True):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("""
-                    **✅ What's Preserved:**
-                    - All formulas and calculations
-                    - VBA macro code structure
-                    - Worksheet functions
-                    - Data validation rules
-                    - Conditional formatting
-                    """)
-                
-                with col2:
-                    st.markdown("""
-                    **⚠️ Limitations:**
-                    - Macros won't execute in browser
-                    - Interactive VBA features disabled
-                    - Download file to run macros
-                    - Security restrictions apply
-                    """)
-                
-                st.info("💡 **Tip:** Download the processed file to use macros in Excel desktop application")
-        else:
-            st.info("📄 Standard Excel file (no macros detected)")
-    except Exception as e:
-        st.warning("⚠️ Could not analyze macro information")
 
 def display_formulas_info(workbook, sheet_name):
     """Display formula information for a sheet"""
@@ -72,116 +81,65 @@ def display_formulas_info(workbook, sheet_name):
                 if cell.data_type == 'f':  # Formula cell
                     formulas.append({
                         'Cell': cell.coordinate,
-                        'Formula': cell.value,
-                        'Calculated Value': cell.displayed_value,
-                        'Data Type': 'Formula'
+                        'Formula': str(cell.value),
+                        'Value': str(cell.displayed_value) if cell.displayed_value else ''
                     })
         
         if formulas:
             with st.expander(f"🔢 Formulas in {sheet_name} ({len(formulas)} found)", expanded=False):
                 formula_df = pd.DataFrame(formulas)
                 st.dataframe(formula_df, use_container_width=True)
-                
-                # Show formula statistics
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Formulas", len(formulas))
-                with col2:
-                    unique_formulas = len(set([f['Formula'] for f in formulas]))
-                    st.metric("Unique Formulas", unique_formulas)
-                with col3:
-                    complex_formulas = len([f for f in formulas if len(f['Formula']) > 50])
-                    st.metric("Complex Formulas", complex_formulas)
-        else:
-            st.info(f"No formulas found in {sheet_name}")
     except Exception as e:
-        st.error(f"Error reading formulas: {str(e)}")
+        st.warning(f"Could not analyze formulas: {str(e)}")
 
-def create_download_link(workbook, filename):
-    """Create a download link for the workbook with macros preserved"""
-    output = io.BytesIO()
+def display_macro_info(workbook):
+    """Display macro/VBA information if present"""
     try:
-        # Save with macros if present
-        workbook.save(output)
+        if hasattr(workbook, 'vba_archive') and workbook.vba_archive:
+            st.success("🔧 **Macro-enabled Excel file detected!**")
+            with st.expander("ℹ️ Macro Information", expanded=False):
+                st.info("⚠️ Macros are preserved but won't execute in the browser for security reasons.")
+        else:
+            st.info("📄 Standard Excel file (no macros detected)")
+    except Exception as e:
+        st.info("ℹ️ Could not detect macro information")
+
+def create_download_link(df, filename):
+    """Create a download link for the DataFrame"""
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Sheet1')
+        
         output.seek(0)
         b64 = base64.b64encode(output.read()).decode()
-        
-        # Determine file extension
-        if filename.endswith('.xlsm'):
-            mime_type = "application/vnd.ms-excel.sheet.macroEnabled.12"
-        else:
-            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        
-        href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}">📥 Download {filename}</a>'
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 Download {filename}</a>'
         return href
     except Exception as e:
         st.error(f"Error creating download link: {str(e)}")
         return None
 
-def analyze_sheet_complexity(df, workbook, sheet_name):
-    """Analyze and display sheet complexity metrics"""
-    try:
-        worksheet = workbook[sheet_name]
-        
-        # Count different types of content
-        formula_count = 0
-        value_count = 0
-        empty_count = 0
-        
-        for row in worksheet.iter_rows():
-            for cell in row:
-                if cell.value is None:
-                    empty_count += 1
-                elif cell.data_type == 'f':
-                    formula_count += 1
-                else:
-                    value_count += 1
-        
-        # Display metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("📊 Data Cells", value_count)
-        with col2:
-            st.metric("🔢 Formulas", formula_count)
-        with col3:
-            st.metric("📋 Total Cells", len(df) * len(df.columns) if not df.empty else 0)
-        with col4:
-            complexity_score = (formula_count * 2 + value_count) / max(1, len(df) * len(df.columns)) * 100
-            st.metric("🎯 Complexity %", f"{complexity_score:.1f}")
-            
-    except Exception as e:
-        st.error(f"Error analyzing sheet complexity: {str(e)}")
-
 def main():
     # Header
-    st.title("🔧 Excel Macro Dashboard")
-    st.markdown("**Advanced Excel file viewer with macro support (.xlsm, .xlsx, .xls)**")
+    st.title("📊 Interactive Excel Dashboard")
+    st.markdown("Upload your Excel file to view and interact with all sheets")
     
     # Sidebar for file upload
     with st.sidebar:
         st.header("📁 File Upload")
         uploaded_file = st.file_uploader(
             "Choose an Excel file",
-            type=['xlsm', 'xlsx', 'xls'],
-            help="Upload Excel files including macro-enabled (.xlsm) files"
+            type=['xlsx', 'xls', 'xlsm'],
+            help="Upload an Excel file with multiple sheets (supports macro-enabled files)"
         )
         
         if uploaded_file:
             st.success(f"✅ File: {uploaded_file.name}")
             st.info(f"📏 Size: {uploaded_file.size / 1024:.1f} KB")
-            
-            # File type detection
-            file_ext = uploaded_file.name.split('.')[-1].lower()
-            if file_ext == 'xlsm':
-                st.warning("🔧 Macro-enabled file detected")
-            elif file_ext == 'xlsx':
-                st.info("📊 Standard Excel file")
-            else:
-                st.info("📄 Legacy Excel file")
     
     if uploaded_file is not None:
         # Load the Excel file
-        with st.spinner("🔄 Loading Excel file and analyzing structure..."):
+        with st.spinner("🔄 Loading Excel file..."):
             workbook, sheet_names, excel_data = load_excel_file(uploaded_file)
         
         if workbook and sheet_names and excel_data:
@@ -190,19 +148,6 @@ def main():
             # Display macro information
             display_macro_info(workbook)
             
-            # Global download option
-            st.markdown("---")
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.markdown("### 📥 Download Options")
-            with col2:
-                if st.button("📥 Download Complete File", type="primary"):
-                    download_link = create_download_link(workbook, uploaded_file.name)
-                    if download_link:
-                        st.markdown(download_link, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
             # Create tabs for each sheet
             tabs = st.tabs(sheet_names)
             
@@ -210,40 +155,39 @@ def main():
                 with tab:
                     df = excel_data[sheet_name]
                     
-                    st.subheader(f"📋 {sheet_name}")
-                    
                     if not df.empty:
-                        # Analyze sheet complexity
-                        analyze_sheet_complexity(df, workbook, sheet_name)
+                        # Display sheet statistics
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("📊 Rows", len(df))
+                        with col2:
+                            st.metric("📋 Columns", len(df.columns))
+                        with col3:
+                            st.metric("✅ Non-null", df.count().sum())
+                        with col4:
+                            memory_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
+                            st.metric("💾 Memory", f"{memory_mb:.1f} MB")
                         
                         # Display formulas info
                         display_formulas_info(workbook, sheet_name)
                         
-                        # Display the data
-                        st.markdown("#### 📊 Sheet Data")
-                        st.dataframe(df, use_container_width=True, height=400)
+                        # Display the data with error handling
+                        st.subheader(f"📋 {sheet_name} Data")
+                        try:
+                            st.dataframe(df, use_container_width=True, height=400)
+                        except Exception as e:
+                            st.error(f"Error displaying data: {str(e)}")
+                            st.markdown("**Raw data preview:**")
+                            st.text(str(df.head()))
                         
-                        # Individual sheet download
-                        if st.button(f"📥 Download {sheet_name} only", key=f"download_sheet_{i}"):
-                            # Create a new workbook with just this sheet
-                            new_wb = openpyxl.Workbook()
-                            new_ws = new_wb.active
-                            new_ws.title = sheet_name
-                            
-                            # Copy data
-                            for r_idx, row in enumerate(df.values, 1):
-                                for c_idx, value in enumerate(row, 1):
-                                    new_ws.cell(row=r_idx, column=c_idx, value=value)
-                            
-                            # Create download link
-                            output = io.BytesIO()
-                            new_wb.save(output)
-                            output.seek(0)
-                            b64 = base64.b64encode(output.read()).decode()
-                            href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{sheet_name}.xlsx">Download {sheet_name}.xlsx</a>'
-                            st.markdown(href, unsafe_allow_html=True)
+                        # Download section
+                        st.markdown("---")
+                        if st.button(f"📥 Download {sheet_name}", key=f"download_{i}"):
+                            download_link = create_download_link(df, f"{sheet_name}.xlsx")
+                            if download_link:
+                                st.markdown(download_link, unsafe_allow_html=True)
                     else:
-                        st.warning("⚠️ This sheet is empty")
+                        st.warning("⚠️ This sheet is empty or could not be read")
     
     else:
         # Welcome message
@@ -251,32 +195,17 @@ def main():
         
         # Feature showcase
         st.markdown("""
-        ### 🚀 Advanced Features:
+        ### 🚀 Features:
+        - **📊 Multi-sheet support**: View all Excel sheets as separate tabs
+        - **🔢 Formula preservation**: See Excel formulas and their calculated values
+        - **🔧 Macro support**: Handle .xlsm files with VBA macros
+        - **📥 Download capability**: Export individual sheets
+        - **🔒 Data cleaning**: Automatic handling of mixed data types
         
-        #### 🔧 **Macro Support**
-        - **Full .xlsm compatibility** - Handle macro-enabled Excel files
-        - **VBA preservation** - Macros are preserved in downloads
-        - **Formula analysis** - Detailed breakdown of Excel formulas
-        - **Security-first** - Macros don't execute in browser for safety
-        
-        #### 📊 **Data Analysis**
-        - **Multi-sheet tabs** - Navigate between all Excel sheets
-        - **Complexity metrics** - Understand your spreadsheet structure
-        - **Formula detection** - See all formulas and their locations
-        - **Interactive viewing** - Sort and filter data in real-time
-        
-        #### 📥 **Export Options**
-        - **Complete file download** - Get the full file with macros intact
-        - **Individual sheets** - Download specific sheets as needed
-        - **Format preservation** - Maintain Excel formatting and structure
-        
-        ### 📁 Supported Formats:
-        - **`.xlsm`** - Excel with macros (primary focus)
+        ### 📁 Supported formats:
+        - **`.xlsm`** - Excel with macros
         - **`.xlsx`** - Standard Excel 2007+
         - **`.xls`** - Legacy Excel 97-2003
-        
-        ### 🔒 Security Note:
-        Macro code is preserved but not executed for security. Download files to run macros in Excel.
         """)
 
 if __name__ == "__main__":
