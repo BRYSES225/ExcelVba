@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import io
 import base64
 
@@ -28,42 +27,6 @@ def load_excel_file(uploaded_file):
         st.error(f"Error loading Excel file: {str(e)}")
         return None, None, None
 
-def display_sheet_with_aggrid(df, sheet_name):
-    """Display DataFrame using AgGrid for interactivity"""
-    st.subheader(f"📋 {sheet_name}")
-    
-    if df.empty:
-        st.warning("This sheet is empty")
-        return
-    
-    # Configure AgGrid options
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_pagination(paginationAutoPageSize=True)
-    gb.configure_side_bar()
-    gb.configure_selection('multiple', use_checkbox=True, groupSelectsChildren="Group checkbox select children")
-    gb.configure_default_column(editable=True, groupable=True)
-    
-    # Enable filtering and sorting
-    gb.configure_column("", checkboxSelection=True)
-    
-    gridOptions = gb.build()
-    
-    # Display the grid
-    grid_response = AgGrid(
-        df,
-        gridOptions=gridOptions,
-        data_return_mode=DataReturnMode.AS_INPUT,
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        fit_columns_on_grid_load=False,
-        theme='streamlit',
-        enable_enterprise_modules=True,
-        height=400,
-        width='100%',
-        reload_data=True
-    )
-    
-    return grid_response
-
 def display_formulas_info(workbook, sheet_name):
     """Display formula information for a sheet"""
     try:
@@ -80,9 +43,8 @@ def display_formulas_info(workbook, sheet_name):
                     })
         
         if formulas:
-            st.expander("🔢 Formulas in this sheet", expanded=False).dataframe(
-                pd.DataFrame(formulas), use_container_width=True
-            )
+            with st.expander("🔢 Formulas in this sheet", expanded=False):
+                st.dataframe(pd.DataFrame(formulas), use_container_width=True)
     except Exception as e:
         st.error(f"Error reading formulas: {str(e)}")
 
@@ -113,8 +75,6 @@ def main():
         
         if uploaded_file:
             st.success(f"File uploaded: {uploaded_file.name}")
-            
-            # File info
             st.info(f"File size: {uploaded_file.size / 1024:.1f} KB")
     
     if uploaded_file is not None:
@@ -146,27 +106,18 @@ def main():
                     # Display formulas info
                     display_formulas_info(workbook, sheet_name)
                     
-                    # Display the interactive grid
-                    grid_response = display_sheet_with_aggrid(df, sheet_name)
-                    
-                    # Download section
-                    st.markdown("---")
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
+                    # Display the data
+                    st.subheader(f"📋 {sheet_name}")
+                    if not df.empty:
+                        st.dataframe(df, use_container_width=True, height=400)
+                        
+                        # Download section
+                        st.markdown("---")
                         if st.button(f"📥 Download {sheet_name} as Excel", key=f"download_{i}"):
                             download_link = create_download_link(df, f"{sheet_name}.xlsx")
                             st.markdown(download_link, unsafe_allow_html=True)
-                    
-                    with col2:
-                        if st.button(f"📋 Show Raw Data", key=f"raw_{i}"):
-                            st.dataframe(df, use_container_width=True)
-                    
-                    # Show selected rows if any
-                    if grid_response['selected_rows']:
-                        st.subheader("Selected Rows")
-                        selected_df = pd.DataFrame(grid_response['selected_rows'])
-                        st.dataframe(selected_df, use_container_width=True)
+                    else:
+                        st.warning("This sheet is empty")
     
     else:
         # Welcome message
@@ -188,3 +139,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
